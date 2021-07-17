@@ -1,5 +1,5 @@
-# Drift
-## A light-weight, styling and modern X11 stacking window manager.
+## Drift
+### A light-weight, stylish and modern X11 stacking window manager.
 Drift was born after the observation that most Linux stacking window managers are lacking in either user experience or aesthetics.
 It aims to bring sensible defaults, modern decorations and animations out of the box, while remaining light-weight and configurable.
 
@@ -29,7 +29,9 @@ Drift sets out to achieve the following:
 # FAQ:
 * Q: What stage is Drift currently in? Is it ready for use?
 * A: It is purely theoretical with a proof-of-concept in the works. No, it's not even close to ready as of now.
+  
 * Q: Why bundle a GUI configuration tool with a light-weight WM?
 * A: Because this way we can ensure that the version of the configuration tool and the WM (and thus the possible configuration keys/values) are always matching.
+  
 * Q: What's wrong with Openbox/Fluxbox/KWin/<insert stacking WM of your choice here>?
 * A: Nothing, I just think we can do even better than existing solutions. In fact the project is heavily inspired by the feature set of KWin and the unobtrusiveness and light-weightness of Openbox.
