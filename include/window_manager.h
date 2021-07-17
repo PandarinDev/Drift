@@ -20,8 +20,10 @@ namespace drift {
 
         void configure() const;
 
-        void handle_map_request(xcb_map_request_event_t* event);
-        void handle_button_release(xcb_button_release_event_t* event);
+        void handle_map_request(xcb_map_request_event_t* event) const;
+        void handle_button_release(xcb_button_release_event_t* event) const;
+        void handle_focus_in(xcb_focus_in_event_t* event) const;
+        void handle_focus_out(xcb_focus_out_event_t* event) const;
 
     };
 

@@ -29,9 +29,7 @@ Drift sets out to achieve the following:
 # FAQ:
 * Q: What stage is Drift currently in? Is it ready for use?
 * A: It is purely theoretical with a proof-of-concept in the works. No, it's not even close to ready as of now.
-  
 * Q: Why bundle a GUI configuration tool with a light-weight WM?
 * A: Because this way we can ensure that the version of the configuration tool and the WM (and thus the possible configuration keys/values) are always matching.
-  
-* Q: What's wrong with Openbox/Fluxbox/KWin/<insert stacking WM of your choice here>?
+* Q: What's wrong with Openbox/Fluxbox/KWin/*[insert stacking WM of your choice here]*?
 * A: Nothing, I just think we can do even better than existing solutions. In fact the project is heavily inspired by the feature set of KWin and the unobtrusiveness and light-weightness of Openbox.
