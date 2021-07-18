@@ -38,6 +38,9 @@ namespace drift {
             const auto event_type = event->response_type & ~0x80;
             std::cout << "Received event of type: " << std::to_string(event_type) << std::endl;
             switch (event_type) {
+                case XCB_CREATE_NOTIFY:
+                    handle_create_notify(reinterpret_cast<xcb_create_notify_event_t*>(event));
+                    break;
                 case XCB_MAP_REQUEST:
                     handle_map_request(reinterpret_cast<xcb_map_request_event_t*>(event));
                     break;
@@ -75,7 +78,53 @@ namespace drift {
         xcb_flush(connection);
     }
 
+    void WindowManager::handle_create_notify(xcb_create_notify_event_t* event) {
+        // Ignore the window if it's a frame created by us
+        const auto it = frame_windows.find(event->window);
+        if (it != frame_windows.end()) {
+            return;
+        }
+
+        // Otherwise create a frame window and reparent the original
+        const auto window = xcb_generate_id(connection);
+        const auto geometry_cookie = xcb_get_geometry(connection, event->window);
+        xcb_generic_error_t* error = nullptr;
+        const auto geometry_reply = xcb_get_geometry_reply(connection, geometry_cookie, &error);
+        if (error) {
+            free(error);
+            throw std::runtime_error("Failed to query new window geometry");
+        }
+        xcb_create_window(
+            connection, XCB_COPY_FROM_PARENT, window, screen->root,
+            geometry_reply->x, geometry_reply->y, geometry_reply->width,
+            geometry_reply->height, 3, XCB_WINDOW_CLASS_COPY_FROM_PARENT,
+            screen->root_visual, 0, nullptr);
+        xcb_reparent_window(connection, event->window, window, 0, 10);
+        const auto context_id = xcb_generate_id(connection);
+        std::uint32_t values[] = { screen->white_pixel, 0 };
+        xcb_create_gc(connection, context_id, window, XCB_GC_FOREGROUND | XCB_GC_GRAPHICS_EXPOSURES, values);
+        xcb_rectangle_t rectangle;
+        rectangle.x = geometry_reply->x;
+        rectangle.y = geometry_reply->y;
+        rectangle.width = geometry_reply->width;
+        rectangle.height = 10;
+        xcb_poly_fill_rectangle(connection, window, context_id, 1, &rectangle);
+        xcb_map_window(connection, window);
+        frame_windows.emplace(window);
+    }
+
     void WindowManager::handle_map_request(xcb_map_request_event_t* event) const {
+        // Query the proposed size of the window
+        std::uint32_t width, height;
+        const auto size_cookie = xcb_get_geometry(connection, event->window);
+        xcb_generic_error_t* error = nullptr;
+        const auto size_reply = xcb_get_geometry_reply(connection, size_cookie, &error);
+        if (error) {
+            free(error);
+            throw std::runtime_error("Failed to query size of mapped window.");
+        }
+        width = size_reply->width;
+        height = size_reply->height;
         xcb_map_window(connection, event->window);
         // Note: Value mask entries are required to be in ascending order of enum value.
         std::uint16_t value_mask =
@@ -85,13 +134,7 @@ namespace drift {
             XCB_CONFIG_WINDOW_HEIGHT |
             XCB_CONFIG_WINDOW_BORDER_WIDTH;
         // Note: Values need to be in the same order as value masks. All values are in pixels.
-        std::uint32_t values[] = {
-            (screen->width_in_pixels / 2) - (300 / 2),  // X position of window
-            (screen->height_in_pixels / 2) - (200 / 2), // Y position of window
-            300,                                        // Width of window
-            200,                                        // Height of window
-            3                                           // Border width
-        };
+        std::uint32_t values[] = { size_reply->x, size_reply->y, width, height, 3 };
         xcb_configure_window(connection, event->window, value_mask, values);
         xcb_flush(connection);
         std::uint32_t event_masks = XCB_EVENT_MASK_ENTER_WINDOW | XCB_EVENT_MASK_FOCUS_CHANGE;
@@ -118,14 +161,16 @@ namespace drift {
         const auto window = event->event;
         std::uint32_t border_color = 0xffffff;
         xcb_change_window_attributes(connection, window, XCB_CW_BORDER_PIXEL, &border_color);
-        std::cout << "Changing window focus to light" << std::endl;
+        std::uint32_t stack_mode = XCB_STACK_MODE_ABOVE;
+        xcb_configure_window(connection, window, XCB_CONFIG_WINDOW_STACK_MODE, &stack_mode);
     }
 
     void WindowManager::handle_focus_out(xcb_focus_out_event_t* event) const {
         const auto window = event->event;
         std::uint32_t border_color = 0xcccccc;
         xcb_change_window_attributes(connection, window, XCB_CW_BORDER_PIXEL, &border_color);
-        std::cout << "Changing window focus to dark" << std::endl;
+        std::uint32_t stack_mode = XCB_STACK_MODE_BELOW;
+        xcb_configure_window(connection, window, XCB_CONFIG_WINDOW_STACK_MODE, &stack_mode);
     }
 
 }
