@@ -7,7 +7,7 @@
 
 namespace drift {
 
-    WindowManager::WindowManager() {
+    WindowManager::WindowManager() : grabbed_window(std::nullopt) {
         connection = xcb_connect(nullptr, nullptr);
         if (xcb_connection_has_error(connection)) {
             throw std::runtime_error("Failed to connect to Xorg.");
@@ -50,6 +50,9 @@ namespace drift {
                 case XCB_MAP_REQUEST:
                     handle_map_request(reinterpret_cast<xcb_map_request_event_t*>(event));
                     break;
+                case XCB_BUTTON_PRESS:
+                    handle_button_press(reinterpret_cast<xcb_button_press_event_t*>(event));
+                    break;
                 case XCB_BUTTON_RELEASE:
                     handle_button_release(reinterpret_cast<xcb_button_release_event_t*>(event));
                     break;
@@ -81,9 +84,16 @@ namespace drift {
             free(error);
             throw std::runtime_error("Failed to subscribe to window events. Is a window manager already running?");
         }
+
+        // Subscribe to left-click events
         xcb_grab_button(
-            connection, 0, screen->root, XCB_EVENT_MASK_BUTTON_PRESS | XCB_EVENT_MASK_BUTTON_RELEASE,
-            XCB_GRAB_MODE_ASYNC, XCB_GRAB_MODE_ASYNC, screen->root, XCB_NONE, 1, XCB_MOD_MASK_1);
+            connection, 0, screen->root, XCB_EVENT_MASK_BUTTON_PRESS,
+            XCB_GRAB_MODE_ASYNC, XCB_GRAB_MODE_ASYNC, screen->root, XCB_NONE, XCB_BUTTON_INDEX_1, XCB_MOD_MASK_ANY);
+
+        // Subscribe to right-click events
+        xcb_grab_button(
+            connection, 0, screen->root, XCB_EVENT_MASK_BUTTON_PRESS,
+            XCB_GRAB_MODE_ASYNC, XCB_GRAB_MODE_ASYNC, screen->root, XCB_NONE, XCB_BUTTON_INDEX_3, XCB_MOD_MASK_ANY);
         xcb_flush(connection);
     }
 
@@ -108,7 +118,7 @@ namespace drift {
         }
         constexpr auto border_width = 3;
         constexpr auto window_masks = XCB_CW_BACK_PIXEL | XCB_CW_EVENT_MASK;
-        std::array<std::uint32_t, 2> window_values { screen->white_pixel, XCB_EVENT_MASK_BUTTON_1_MOTION };
+        std::array<std::uint32_t, 2> window_values { screen->white_pixel };
         xcb_create_window(
             connection, XCB_COPY_FROM_PARENT, window, screen->root,
             geometry_reply->x, geometry_reply->y, geometry_reply->width,
@@ -121,7 +131,6 @@ namespace drift {
     }
 
     void WindowManager::handle_destroy_notify(xcb_destroy_notify_event_t* event) {
-        std::cout << "Destroy notify has been called" << std::endl;
         // If a child window has been destroyed destroy it's parent too
         const auto it = frame_windows.find(event->window);
         if (it == frame_windows.end()) {
@@ -130,24 +139,30 @@ namespace drift {
         xcb_destroy_window(connection, it->second);
     }
 
-    void WindowManager::handle_motion_notify(xcb_motion_notify_event_t* event) const {
-        std::optional<std::uint32_t> frame_window;
-        for (const auto& entry : frame_windows) {
-            if (entry.second == event->event) {
-                frame_window = event->event;
-                break;
-            }
-        }
-        if (!frame_window) {
+    void WindowManager::handle_motion_notify(xcb_motion_notify_event_t* event) {
+        if (!grabbed_window) {
             return;
         }
 
+        auto delta_x = event->root_x - last_x;
+        auto delta_y = event->root_y - last_y;
+
+        last_x = event->root_x;
+        last_y = event->root_y;
+
+        const auto geometry_cookie = xcb_get_geometry(connection, *grabbed_window);
+        xcb_generic_error_t* error = nullptr;
+        const auto geometry_reply = xcb_get_geometry_reply(connection, geometry_cookie, &error);
+        if (error) {
+            free(error);
+            throw std::runtime_error("Failed to query new window geometry");
+        }
+        const auto new_x = static_cast<std::uint32_t>(std::max(geometry_reply->x + delta_x, 0));
+        const auto new_y = static_cast<std::uint32_t>(std::max(geometry_reply->y + delta_y, 0));
+
         std::uint16_t mask = XCB_CONFIG_WINDOW_X | XCB_CONFIG_WINDOW_Y;
-        std::array<std::uint32_t, 2> values {
-            static_cast<std::uint32_t>(event->event_x),
-            static_cast<std::uint32_t>(event->event_y)
-        };
-        xcb_configure_window(connection, *frame_window, mask, values.data());
+        std::array<std::uint32_t, 2> values { new_x, new_y };
+        xcb_configure_window(connection, *grabbed_window, mask, values.data());
     }
 
     void WindowManager::handle_map_request(xcb_map_request_event_t* event) const {
@@ -171,15 +186,30 @@ namespace drift {
             XCB_CONFIG_WINDOW_HEIGHT |
             XCB_CONFIG_WINDOW_BORDER_WIDTH;
         // Note: Values need to be in the same order as value masks. All values are in pixels.
-        std::uint32_t values[] = { size_reply->x, size_reply->y, width, height, 3 };
-        xcb_configure_window(connection, event->window, value_mask, values);
+        std::array<std::uint32_t, 5> values {
+            static_cast<std::uint32_t>(size_reply->x),
+            static_cast<std::uint32_t>(size_reply->y),
+            width, height, 3
+        };
+        xcb_configure_window(connection, event->window, value_mask, values.data());
         xcb_flush(connection);
         std::uint32_t event_masks = XCB_EVENT_MASK_ENTER_WINDOW | XCB_EVENT_MASK_FOCUS_CHANGE | XCB_EVENT_MASK_STRUCTURE_NOTIFY;
         xcb_change_window_attributes(connection, event->window, XCB_CW_EVENT_MASK, &event_masks);
         xcb_set_input_focus(connection, XCB_INPUT_FOCUS_POINTER_ROOT, event->window, XCB_CURRENT_TIME);
     }
 
-    void WindowManager::handle_button_release(xcb_button_release_event_t* event) const {
+    void WindowManager::handle_button_press(xcb_button_press_event_t* event) {
+        // Destroy windows on right click
+        if (event->detail == XCB_BUTTON_INDEX_3 && event->child != XCB_NONE) {
+            xcb_destroy_window(connection, event->child);
+            return;
+        }
+
+        // Otherwise we only care about left clicks
+        if (event->detail != XCB_BUTTON_INDEX_1) {
+            return;
+        }
+
         const auto cookie = xcb_query_pointer(connection, screen->root);
         xcb_generic_error_t* error = nullptr;
         const auto pointer_reply = xcb_query_pointer_reply(connection, cookie, &error);
@@ -187,11 +217,26 @@ namespace drift {
             free(error);
             throw std::runtime_error("Failed to query pointer.");
         }
-        // Assign focus to the window where the pointer was released
         const auto target = pointer_reply->child != XCB_NONE
             ? pointer_reply->child
             : screen->root;
-        xcb_set_input_focus(connection, XCB_INPUT_FOCUS_POINTER_ROOT, target, XCB_CURRENT_TIME);
+        // If the target is a frame grab the pointer
+        for (const auto& entry : frame_windows) {
+            if (entry.second == target) {
+                grabbed_window = target;
+                xcb_grab_pointer(
+                    connection, 0, screen->root, XCB_EVENT_MASK_POINTER_MOTION | XCB_EVENT_MASK_BUTTON_RELEASE,
+                    XCB_GRAB_MODE_ASYNC, XCB_GRAB_MODE_ASYNC, screen->root, XCB_NONE, XCB_CURRENT_TIME);
+                last_x = pointer_reply->root_x;
+                last_y = pointer_reply->root_y;
+                return;
+            }
+        }
+    }
+
+    void WindowManager::handle_button_release(xcb_button_release_event_t* event) {
+        grabbed_window = std::nullopt;
+        xcb_ungrab_pointer(connection, XCB_CURRENT_TIME);
     }
 
     void WindowManager::handle_focus_in(xcb_focus_in_event_t* event) const {
